@@ -6,7 +6,9 @@ import { HStack, VStack } from '@renderer/components/Layout'
 import Scrollbar from '@renderer/components/Scrollbar'
 import { useMCPServers } from '@renderer/hooks/useMCPServers'
 import { MCPServer } from '@renderer/types'
-import { FC, useCallback } from 'react'
+import { getModelScopeToken, saveModelScopeToken, syncModelScopeServers } from '@renderer/utils/modelScopeUtils'
+import { Dropdown, Input, Menu, Modal } from 'antd'
+import { FC, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import styled from 'styled-components'
 
@@ -21,6 +23,9 @@ interface Props {
 const McpServersList: FC<Props> = ({ selectedMcpServer, setSelectedMcpServer }) => {
   const { mcpServers, addMCPServer, updateMcpServers } = useMCPServers()
   const { t } = useTranslation()
+  const [isTokenModalVisible, setIsTokenModalVisible] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
 
   const onAddMcpServer = useCallback(async () => {
     const newServer = {
@@ -38,16 +43,114 @@ const McpServersList: FC<Props> = ({ selectedMcpServer, setSelectedMcpServer }) 
     setSelectedMcpServer(newServer)
   }, [addMCPServer, setSelectedMcpServer, t])
 
+  const onSyncFromModelScope = useCallback(async () => {
+    try {
+      // Check if we have a saved token
+      const token = getModelScopeToken()
+
+      // If no token is saved, prompt for one
+      if (!token) {
+        setTokenInput('')
+        setIsTokenModalVisible(true)
+        return
+      }
+
+      // Continue with the token we have
+      await handleModelScopeSync(token)
+    } catch (error) {
+      console.error('Error syncing from ModelScope:', error)
+      window.message.error({
+        content: t('settings.mcp.syncError'),
+        key: 'mcp-sync'
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mcpServers, addMCPServer, setSelectedMcpServer, t])
+
+  // Handler for ModelScope sync process
+  const handleModelScopeSync = async (token: string) => {
+    setIsSyncing(true)
+    window.message.loading({ content: t('settings.mcp.syncingFromModelScope'), key: 'mcp-sync' })
+
+    try {
+      const result = await syncModelScopeServers(token, mcpServers)
+
+      // Display result message
+      if (result.success) {
+        if (result.addedServers.length > 0) {
+          // Add all new servers
+          result.addedServers.forEach((server) => {
+            addMCPServer(server)
+          })
+
+          // Select the first newly added server
+          if (result.addedServers[0]) {
+            setSelectedMcpServer(result.addedServers[0])
+          }
+
+          window.message.success({
+            content: result.message,
+            key: 'mcp-sync'
+          })
+        } else {
+          window.message.info({
+            content: result.message,
+            key: 'mcp-sync'
+          })
+        }
+      } else {
+        // Handle error case
+        window.message.error({
+          content: result.message,
+          key: 'mcp-sync'
+        })
+
+        // If the token was invalid, show the token modal again
+        if (result.message === t('settings.mcp.unauthorized')) {
+          setTokenInput('')
+          setIsTokenModalVisible(true)
+        }
+      }
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  // Handle token submission
+  const handleTokenSubmit = () => {
+    if (tokenInput.trim()) {
+      // Save the token
+      saveModelScopeToken(tokenInput.trim())
+      setIsTokenModalVisible(false)
+
+      // Continue with the sync using the new token
+      handleModelScopeSync(tokenInput.trim())
+    }
+  }
+
+  const menu = (
+    <Menu>
+      <Menu.Item key="add-local" onClick={onAddMcpServer}>
+        {t('settings.mcp.addLocalServer')}
+      </Menu.Item>
+      <Menu.Item key="sync-modelscope" onClick={onSyncFromModelScope} disabled={isSyncing}>
+        {t('settings.mcp.syncFromModelScope')}
+      </Menu.Item>
+    </Menu>
+  )
+
   return (
     <Container>
       <ServersList>
         <ListHeader>
           <SettingTitle>{t('settings.mcp.newServer')}</SettingTitle>
         </ListHeader>
-        <AddServerCard onClick={onAddMcpServer}>
-          <PlusOutlined style={{ fontSize: 24 }} />
-          <AddServerText>{t('settings.mcp.addServer')}</AddServerText>
-        </AddServerCard>
+        <Dropdown overlay={menu} trigger={['click']} placement="bottomCenter">
+          <AddServerCard>
+            <PlusOutlined style={{ fontSize: 24 }} />
+            <AddServerText>{t('settings.mcp.addServer')}</AddServerText>
+          </AddServerCard>
+        </Dropdown>
         <DragableList list={mcpServers} onUpdate={updateMcpServers}>
           {(server) => (
             <ServerCard
@@ -74,6 +177,27 @@ const McpServersList: FC<Props> = ({ selectedMcpServer, setSelectedMcpServer }) 
         </DragableList>
       </ServersList>
       <ServerSettings>{selectedMcpServer && <McpSettings server={selectedMcpServer} />}</ServerSettings>
+
+      {/* Token Input Modal with improved UX */}
+      <Modal
+        title={t('settings.mcp.modelScopeTokenTitle') || 'ModelScope Token'}
+        visible={isTokenModalVisible}
+        onOk={handleTokenSubmit}
+        onCancel={() => setIsTokenModalVisible(false)}
+        okButtonProps={{ disabled: !tokenInput.trim() }}
+        okText={t('common.confirm') || 'Confirm'}
+        cancelText={t('common.cancel') || 'Cancel'}>
+        <p>{t('settings.mcp.modelScopeTokenDescription') || 'Please enter your ModelScope API token:'}</p>
+        <Input
+          value={tokenInput}
+          onChange={(e) => setTokenInput(e.target.value)}
+          placeholder={t('settings.mcp.tokenPlaceholder') || 'Enter your token here'}
+          autoFocus
+        />
+        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--color-text-3)' }}>
+          {t('settings.mcp.tokenHelp') || 'Your token can be found in your ModelScope account settings.'}
+        </div>
+      </Modal>
     </Container>
   )
 }
